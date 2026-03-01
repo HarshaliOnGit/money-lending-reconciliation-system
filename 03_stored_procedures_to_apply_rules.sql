@@ -1,10 +1,12 @@
 USE tri_party_lending;
 
--- Post a transaction with basic validation (shows “production-minded” approach)
+DELIMITER $$
+
+-- Post a transaction with basic validation
 CREATE PROCEDURE sp_post_transaction(
   IN p_loan_id INT,
   IN p_txn_date DATE,
-  IN p_txn_type ENUM('DISBURSEMENT','PASS_THROUGH','REPAYMENT','PENALTY','ADJUSTMENT'),
+  IN p_txn_type VARCHAR(20),
   IN p_from_company_id INT,
   IN p_to_company_id INT,
   IN p_amount DECIMAL(14,2),
@@ -16,25 +18,25 @@ BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Amount must be > 0';
   END IF;
 
+  IF p_txn_type NOT IN ('DISBURSEMENT','PASS_THROUGH','REPAYMENT','PENALTY','ADJUSTMENT') THEN
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid txn_type';
+  END IF;
+
   IF (SELECT COUNT(*) FROM loans WHERE loan_id = p_loan_id) = 0 THEN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid loan_id';
   END IF;
 
-  -- If external_ref is provided, prevent duplicates via unique index uq_txn_extref.
   INSERT INTO transactions (loan_id, txn_date, txn_type, from_company_id, to_company_id, amount, external_ref, notes)
   VALUES (p_loan_id, p_txn_date, p_txn_type, p_from_company_id, p_to_company_id, p_amount, p_external_ref, p_notes);
-END
+END$$
 
 
--- Accrue monthly interest using simple formula:
--- interest = opening_principal * rate/12
--- opening_principal is derived from last accrual closing_principal or loan principal if first month.
+-- Accrue monthly interest
 CREATE PROCEDURE sp_accrue_monthly(IN p_accrual_month DATE)
 BEGIN
   DECLARE month_start DATE;
-  SET month_start = DATE_FORMAT(p_accrual_month, '%Y-%m-01');
+  SET month_start = STR_TO_DATE(DATE_FORMAT(p_accrual_month, '%Y-%m-01'), '%Y-%m-%d');
 
-  -- Upsert accruals for all ACTIVE loans
   INSERT INTO accruals_monthly (loan_id, accrual_month, opening_principal, interest_accrued, penalty_accrued, closing_principal)
   SELECT
     l.loan_id,
@@ -42,7 +44,6 @@ BEGIN
     COALESCE(prev.closing_principal, l.principal_amount) AS opening_principal,
     ROUND(COALESCE(prev.closing_principal, l.principal_amount) * l.interest_rate_annual / 12, 2) AS interest_accrued,
     0.00 AS penalty_accrued,
-    -- For demo: closing_principal = opening - expected_principal_due of that month (if schedule exists), else keep same
     GREATEST(
       COALESCE(prev.closing_principal, l.principal_amount)
       - COALESCE(s.expected_principal_due, 0.00),
@@ -54,27 +55,22 @@ BEGIN
    AND prev.accrual_month = DATE_SUB(month_start, INTERVAL 1 MONTH)
   LEFT JOIN loan_schedule s
     ON s.loan_id = l.loan_id
-   AND DATE_FORMAT(s.due_date, '%Y-%m-01') = month_start
+   AND DATE_FORMAT(s.due_date, '%Y-%m-01') = DATE_FORMAT(month_start, '%Y-%m-01')
   WHERE l.status = 'ACTIVE'
   ON DUPLICATE KEY UPDATE
     opening_principal = VALUES(opening_principal),
     interest_accrued   = VALUES(interest_accrued),
     penalty_accrued    = VALUES(penalty_accrued),
     closing_principal  = VALUES(closing_principal);
-END
+END$$
 
 
--- Run audit rules across a date range; inserts findings into audit_findings
+-- Run audit rules across a date range
 CREATE PROCEDURE sp_run_audit(IN p_from DATE, IN p_to DATE)
 BEGIN
-  -- Clear only findings in current run window to avoid infinite growth for demo
   DELETE FROM audit_findings
    WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY);
 
-  /*
-    R001: Pass-through missing/partial
-    Expect B->C pass-through amount >= A->B disbursement for each loan (within window)
-  */
   INSERT INTO audit_findings (loan_id, rule_code, severity, expected_value, actual_value, delta_value, details)
   SELECT
     d.loan_id,
@@ -98,10 +94,6 @@ BEGIN
   ) p ON p.loan_id = d.loan_id
   WHERE COALESCE(p.passed,0.00) < d.disbursed;
 
-  /*
-    R002: Repayment shortfall per schedule due date (principal+interest)
-    Compare expected schedule vs actual repayments on that due_date (same day for demo)
-  */
   INSERT INTO audit_findings (loan_id, rule_code, severity, expected_value, actual_value, delta_value, details)
   SELECT
     s.loan_id,
@@ -122,18 +114,12 @@ BEGIN
   WHERE s.due_date BETWEEN p_from AND p_to
     AND COALESCE(r.paid,0.00) + 0.01 < (s.expected_principal_due + s.expected_interest_due);
 
-  /*
-    R003: Late repayment but missing penalty
-    If repayment occurs after due_date+grace_days and no PENALTY txn within 3 days of repayment.
-  */
   INSERT INTO audit_findings (loan_id, rule_code, severity, expected_value, actual_value, delta_value, details)
   SELECT
     r.loan_id,
     'R003',
     'MEDIUM',
-    NULL,
-    NULL,
-    NULL,
+    NULL, NULL, NULL,
     CONCAT('Late repayment on ', r.txn_date, ' for due ', s.due_date,
            ' (grace ', s.grace_days, 'd) but no penalty posted near repayment.')
   FROM (
@@ -154,10 +140,6 @@ BEGIN
   WHERE r.txn_date > DATE_ADD(s.due_date, INTERVAL s.grace_days DAY)
     AND p.txn_date IS NULL;
 
-  /*
-    R004: Potential duplicate repayments
-    Same loan, same date, same amount occurs more than once.
-  */
   INSERT INTO audit_findings (loan_id, rule_code, severity, expected_value, actual_value, delta_value, details)
   SELECT
     loan_id,
@@ -173,10 +155,6 @@ BEGIN
     HAVING COUNT(*) > 1
   ) x;
 
-  /*
-    R005: Accrual mismatch vs expected interest (opening_principal*rate/12)
-    Tolerance: 0.50
-  */
   INSERT INTO audit_findings (loan_id, rule_code, severity, expected_value, actual_value, delta_value, details)
   SELECT
     a.loan_id,
@@ -199,6 +177,6 @@ BEGIN
   ) a
   WHERE ABS(a.expected_interest - a.interest_accrued) > 0.50;
 
-END
+END$$
 
 DELIMITER ;

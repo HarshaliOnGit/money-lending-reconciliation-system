@@ -1,10 +1,9 @@
 -- This file contains the scripts to create the schema required to demonstrate this project.
 
--- tri_party_database to crate and store all relavant tables and data
+-- tri_party_database to create and store all relevant tables and data
 DROP DATABASE IF EXISTS tri_party_lending;
 CREATE DATABASE tri_party_lending;
 USE tri_party_lending;
-
 
 -- Create tables to store the companies data involved in the business
 CREATE TABLE companies (
@@ -14,20 +13,18 @@ CREATE TABLE companies (
   UNIQUE KEY uq_company_name (name)
 );
 
---Create table to store the loan related data 
+-- Create table to store the loan related data
 CREATE TABLE loans (
   loan_id INT AUTO_INCREMENT PRIMARY KEY,
   lender_company_id INT NOT NULL,
   borrower_company_id INT NOT NULL,
   intermediary_company_id INT NOT NULL,
   principal_amount DECIMAL(14,2) NOT NULL,
-  interest_rate_annual DECIMAL(7,4) NOT NULL, -- e.g., 0.1200 = 12% annual
+  interest_rate_annual DECIMAL(7,4) NOT NULL,
   start_date DATE NOT NULL,
   term_months INT NOT NULL,
   status ENUM('ACTIVE','CLOSED','DEFAULT') NOT NULL DEFAULT 'ACTIVE',
   external_ref VARCHAR(50) NULL,
-
---Using keys for better performance and mapping
   CONSTRAINT fk_loans_lender FOREIGN KEY (lender_company_id) REFERENCES companies(company_id),
   CONSTRAINT fk_loans_borrower FOREIGN KEY (borrower_company_id) REFERENCES companies(company_id),
   CONSTRAINT fk_loans_intermediary FOREIGN KEY (intermediary_company_id) REFERENCES companies(company_id),
@@ -49,7 +46,7 @@ CREATE TABLE loan_schedule (
   CONSTRAINT fk_schedule_loan FOREIGN KEY (loan_id) REFERENCES loans(loan_id)
 );
 
---Create table to store transactions
+-- Create table to store transactions
 CREATE TABLE transactions (
   txn_id BIGINT AUTO_INCREMENT PRIMARY KEY,
   loan_id INT NOT NULL,
@@ -71,6 +68,7 @@ CREATE TABLE transactions (
   KEY idx_txn_from_to_date (from_company_id, to_company_id, txn_date),
   KEY idx_txn_external_ref (external_ref)
 );
+
 -- Create unique key to avoid duplication
 CREATE UNIQUE INDEX uq_txn_extref ON transactions (loan_id, txn_type, external_ref);
 

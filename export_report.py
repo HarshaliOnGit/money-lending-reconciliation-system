@@ -6,7 +6,7 @@ import mysql.connector
 DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("DB_PORT", "3306"))
 DB_USER = os.getenv("DB_USER", "root")
-DB_PASS = os.getenv("DB_PASS", "")
+DB_PASS = os.getenv("DB_PASS", "Harshali@02")
 DB_NAME = os.getenv("DB_NAME", "tri_party_lending")
 
 REPORT_DIR = os.getenv("REPORT_DIR", "reports")
